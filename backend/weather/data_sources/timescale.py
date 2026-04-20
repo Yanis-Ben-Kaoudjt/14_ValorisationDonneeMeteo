@@ -15,6 +15,7 @@ from weather.models import (
     QuotidienneITN,
     Station,
 )
+from weather.regions import departments_for_region
 from weather.services.national_indicator.protocols import (
     NationalIndicatorBaselineDataSource,
     NationalIndicatorObservedDataSource,
@@ -37,6 +38,12 @@ from weather.services.records.types import (
     RecordsQuery,
     StationRecords,
     TemperatureRecord,
+)
+from weather.services.records_graph.types import (
+    RecordsGraphBucket,
+    RecordsGraphRecord,
+    RecordsGraphRequest,
+    RecordsGraphResult,
 )
 from weather.services.temperature_deviation.protocols import (
     TemperatureDeviationDailyDataSource,
@@ -611,6 +618,32 @@ class TimescaleTemperatureRecordsDataSource:
         return _temperature_records_period_clause(request)
 
 
+def _territoire_clause_named(
+    territoire: str | None,
+    territoire_id: str | None,
+    dept_col: str = 'vs."departement"',
+    station_col: str = 'o."NUM_POSTE"',
+) -> tuple[str, dict]:
+    """
+    Retourne (clause SQL, params) pour filtrer par territoire.
+    Utilise des placeholders nommés (%(name)s).
+    """
+    if not territoire or territoire == "france":
+        return "", {}
+    if territoire == "department":
+        return f"{dept_col} = %(territoire_id)s", {"territoire_id": territoire_id}
+    if territoire == "station":
+        return f"{station_col} = %(territoire_id)s", {"territoire_id": territoire_id}
+    if territoire == "region":
+        depts = departments_for_region(territoire_id or "")
+        if not depts:
+            return "FALSE", {}
+        named = {f"terr_dept_{i}": d for i, d in enumerate(depts)}
+        placeholders = ", ".join(f"%(terr_dept_{i})s" for i in range(len(depts)))
+        return f"{dept_col} IN ({placeholders})", named
+    return "", {}
+
+
 def _temperature_records_period_clause(
     request: TemperatureRecordsRequest,
 ) -> tuple[str, list]:
@@ -665,18 +698,45 @@ class MaterializedTemperatureRecordsDataSource:
         else:
             period_value = None
 
-        sql = """
+        clauses = [
+            "record_type = %(record_type)s",
+            "period_type = %(period_type)s",
+            "period_value IS NOT DISTINCT FROM %(period_value)s",
+        ]
+        params: dict = {
+            "record_type": record_type,
+            "period_type": request.period_type,
+            "period_value": period_value,
+        }
+
+        if request.date_start:
+            clauses.append("record_date >= %(date_start)s")
+            params["date_start"] = request.date_start
+        if request.date_end:
+            clauses.append("record_date <= %(date_end)s")
+            params["date_end"] = request.date_end
+
+        terr_clause, terr_params = _territoire_clause_named(
+            request.territoire,
+            request.territoire_id,
+            dept_col="department",
+            station_col="station_code",
+        )
+        if terr_clause:
+            clauses.append(terr_clause)
+            params.update(terr_params)
+
+        where = " AND ".join(clauses)
+        sql = f"""
             SELECT m.station_code, m.station_name, m.department, m.record_value, m.record_date, vs.lat, vs.lon, vs.alt
                 FROM public.mv_records_battus m
             LEFT JOIN public.v_station vs ON vs.station_code = m.station_code
-            WHERE record_type = %s
-              AND period_type = %s
-              AND period_value IS NOT DISTINCT FROM %s
+            WHERE {where}
             ORDER BY station_name, record_date
         """
 
         with connection.cursor() as cur:
-            cur.execute(sql, [record_type, request.period_type, period_value])
+            cur.execute(sql, params)
             cols = [c.name for c in cur.description]
             rows = [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
@@ -758,6 +818,18 @@ class HybridTemperatureRecordsDataSource:
             request
         )
 
+        terr_clause, terr_named_params = _territoire_clause_named(
+            request.territoire, request.territoire_id
+        )
+
+        date_filter_parts = []
+        if request.date_start:
+            date_filter_parts.append('AND o."AAAAMMJJ" >= %(date_start)s')
+        if request.date_end:
+            date_filter_parts.append('AND o."AAAAMMJJ" <= %(date_end)s')
+        date_filter_clauses = "\n              ".join(date_filter_parts)
+        terr_filter_clause = f"AND {terr_clause}" if terr_clause else ""
+
         sql = f"""
             WITH mv_seeds AS (
                 SELECT station_code, {agg}(record_value) AS seed_val
@@ -801,6 +873,8 @@ class HybridTemperatureRecordsDataSource:
             FROM ordered o
             JOIN public.v_station vs ON vs.station_code = o."NUM_POSTE"
             WHERE o."{col}" {cmp} o.prev_val
+              {date_filter_clauses}
+              {terr_filter_clause}
             ORDER BY vs.name, o."AAAAMMJJ"
         """
 
@@ -810,7 +884,12 @@ class HybridTemperatureRecordsDataSource:
             "period_value": period_value,
             "cutoff_date": cutoff_date,
             **period_named_params,
+            **terr_named_params,
         }
+        if request.date_start:
+            params["date_start"] = request.date_start
+        if request.date_end:
+            params["date_end"] = request.date_end
 
         with connection.cursor() as cur:
             cur.execute(sql, params)
@@ -961,3 +1040,142 @@ def _apply_temperature_filter(
         if (temperature_min is None or e.record_value >= temperature_min)
         and (temperature_max is None or e.record_value <= temperature_max)
     ]
+
+
+def _generate_buckets_day(date_start: dt.date, date_end: dt.date) -> list[str]:
+    buckets: list[str] = []
+    current = date_start
+    while current <= date_end:
+        buckets.append(current.strftime("%Y-%m-%d"))
+        current += dt.timedelta(days=1)
+    return buckets
+
+
+def _generate_buckets_month(date_start: dt.date, date_end: dt.date) -> list[str]:
+    buckets: list[str] = []
+    current = date_start.replace(day=1)
+    end_month = date_end.replace(day=1)
+    while current <= end_month:
+        buckets.append(current.strftime("%Y-%m"))
+        month = current.month + 1
+        year = current.year + (month - 1) // 12
+        current = current.replace(year=year, month=((month - 1) % 12) + 1)
+    return buckets
+
+
+def _generate_buckets_year(date_start: dt.date, date_end: dt.date) -> list[str]:
+    return [str(year) for year in range(date_start.year, date_end.year + 1)]
+
+
+def _generate_buckets(
+    date_start: dt.date, date_end: dt.date, granularity: str
+) -> list[str]:
+    if granularity == "day":
+        return _generate_buckets_day(date_start, date_end)
+    if granularity == "month":
+        return _generate_buckets_month(date_start, date_end)
+    return _generate_buckets_year(date_start, date_end)
+
+
+class TimescaleRecordsGraphDataSource:
+    """
+    Data source pour le graphe de records.
+    Lit depuis mv_records_battus et agrège par bucket temporel.
+    Retourne un point par unité de granularité, y compris les buckets à 0.
+    """
+
+    _GRANULARITY_TO_DATE_TRUNC = {"day": "day", "month": "month", "year": "year"}
+
+    def fetch_graph(self, request: RecordsGraphRequest) -> list[RecordsGraphBucket]:
+        if request.period_type == "month":
+            period_value: str | None = str(request.month)
+        elif request.period_type == "season":
+            period_value = request.season
+        else:
+            period_value = None
+
+        date_trunc = self._GRANULARITY_TO_DATE_TRUNC[request.granularity]
+
+        clauses = [
+            "period_type = %(period_type)s",
+            "period_value IS NOT DISTINCT FROM %(period_value)s",
+            "record_date >= %(date_start)s",
+            "record_date <= %(date_end)s",
+        ]
+        params: dict = {
+            "period_type": request.period_type,
+            "period_value": period_value,
+            "date_start": request.date_start,
+            "date_end": request.date_end,
+        }
+
+        if request.type_records != "all":
+            record_type = "TX" if request.type_records == "hot" else "TN"
+            clauses.insert(0, "record_type = %(record_type)s")
+            params["record_type"] = record_type
+
+        terr_clause, terr_params = _territoire_clause_named(
+            request.territoire,
+            request.territoire_id,
+            dept_col="department",
+            station_col="station_code",
+        )
+        if terr_clause:
+            clauses.append(terr_clause)
+            params.update(terr_params)
+
+        where = " AND ".join(clauses)
+        sql = f"""
+            SELECT
+                DATE_TRUNC('{date_trunc}', record_date)::date AS bucket_date,
+                COUNT(*) AS cnt
+            FROM public.mv_records_battus
+            WHERE {where}
+            GROUP BY DATE_TRUNC('{date_trunc}', record_date)
+            ORDER BY bucket_date
+        """
+
+        sql_records = f"""
+            SELECT station_code, station_name, record_value, record_date, record_type
+            FROM public.mv_records_battus
+            WHERE {where}
+            ORDER BY record_date
+        """
+
+        with connection.cursor() as cur:
+            cur.execute(sql, params)
+            cols = [c[0] for c in cur.description]
+            bucket_rows = {
+                row["bucket_date"].strftime(
+                    "%Y-%m-%d"
+                    if date_trunc == "day"
+                    else "%Y-%m"
+                    if date_trunc == "month"
+                    else "%Y"
+                ): row["cnt"]
+                for row in (dict(zip(cols, r, strict=False)) for r in cur.fetchall())
+            }
+            cur.execute(sql_records, params)
+            cols = [c[0] for c in cur.description]
+            record_rows = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
+
+        all_buckets = _generate_buckets(
+            request.date_start, request.date_end, request.granularity
+        )
+        buckets = [
+            RecordsGraphBucket(bucket=b, nb_records_battus=bucket_rows.get(b, 0))
+            for b in all_buckets
+        ]
+        records = [
+            RecordsGraphRecord(
+                date=row["record_date"].date()
+                if hasattr(row["record_date"], "date")
+                else row["record_date"],
+                station_id=row["station_code"],
+                station_name=row["station_name"],
+                type_records="hot" if row["record_type"] == "TX" else "cold",
+                valeur=float(row["record_value"]),
+            )
+            for row in record_rows
+        ]
+        return RecordsGraphResult(buckets=buckets, records=records)

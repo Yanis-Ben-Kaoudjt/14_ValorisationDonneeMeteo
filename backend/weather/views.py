@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from weather.bootstrap_itn import ITNDependencyProvider
+from weather.bootstrap_records_graph import RecordsGraphDependencyProvider
 from weather.bootstrap_temperature_deviation import (
     TemperatureDeviationDependencyProvider,
     TemperatureDeviationOverviewDependencyProvider,
@@ -15,6 +16,8 @@ from weather.bootstrap_temperature_deviation import (
 from weather.bootstrap_temperature_records import TemperatureRecordsDependencyProvider
 from weather.services.national_indicator.kpi_use_case import get_national_indicator_kpi
 from weather.services.national_indicator.use_case import get_national_indicator
+from weather.services.records_graph.types import RecordsGraphRequest
+from weather.services.records_graph.use_case import get_records_graph
 from weather.services.temperature_deviation.use_case import (
     get_temperature_deviation,
     get_temperature_deviation_overview,
@@ -30,6 +33,8 @@ from .serializers import (
     NationalIndicatorKpiResponseSerializer,
     NationalIndicatorQuerySerializer,
     NationalIndicatorResponseSerializer,
+    RecordsGraphQuerySerializer,
+    RecordsGraphResponseSerializer,
     StationDetailSerializer,
     StationSerializer,
     TemperatureDeviationGraphQuerySerializer,
@@ -211,6 +216,10 @@ class TemperatureRecordsAPIView(APIView):
             type_records=params["type_records"],
             month=params.get("month"),
             season=params.get("season"),
+            date_start=params.get("date_start"),
+            date_end=params.get("date_end"),
+            territoire=params.get("territoire"),
+            territoire_id=params.get("territoire_id"),
         )
 
         try:
@@ -351,3 +360,72 @@ class NationalIndicatorKpiAPIView(APIView):
         out.is_valid(raise_exception=True)
 
         return Response(out.data, status=status.HTTP_200_OK)
+
+
+class RecordsGraphAPIView(APIView):
+    """
+    GET /api/v1/temperature/records/graph
+    Retourne les records de température battus : compte par bucket (histogramme)
+    et liste des records individuels (scatter plot).
+    """
+
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request):
+        q = RecordsGraphQuerySerializer(data=request.query_params)
+        if not q.is_valid():
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message="Paramètre invalide ou manquant",
+                    details=q.errors,
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = q.validated_data
+        ds = RecordsGraphDependencyProvider.get_dep()
+
+        req = RecordsGraphRequest(
+            date_start=params["date_start"],
+            date_end=params["date_end"],
+            granularity=params["granularity"],
+            period_type=params["period_type"],
+            type_records=params["type_records"],
+            month=params.get("month"),
+            season=params.get("season"),
+            territoire=params.get("territoire"),
+            territoire_id=params.get("territoire_id"),
+        )
+
+        try:
+            result = get_records_graph(request=req, data_source=ds)
+        except ValueError as exc:
+            return Response(
+                ErrorSerializer.build(
+                    code="INVALID_PARAMETER",
+                    message=str(exc),
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = RecordsGraphResponseSerializer(
+            {
+                "buckets": [
+                    {"bucket": b.bucket, "nb_records_battus": b.nb_records_battus}
+                    for b in result.buckets
+                ],
+                "records": [
+                    {
+                        "date": r.date,
+                        "station_id": r.station_id,
+                        "station_name": r.station_name,
+                        "type_records": r.type_records,
+                        "valeur": r.valeur,
+                    }
+                    for r in result.records
+                ],
+            }
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)

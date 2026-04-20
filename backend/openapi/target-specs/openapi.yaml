@@ -585,6 +585,149 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
 
+  /temperature/records/graph:
+    get:
+      summary: Graphe des records de température battus
+      description: |
+        Retourne le nombre de records de température battus par bucket temporel (jour/mois/année).
+
+        Chaque point de la série correspond à un bucket et indique combien de records ont été battus
+        sur cette unité de temps.
+
+        **Filtres disponibles :**
+        - `granularity` : découpage de l'axe X (`day`, `month`, `year`)
+        - `period_type` : restriction aux records d'un mois ou d'une saison donnée
+        - `type_records` : records chauds (`hot`), froids (`cold`) ou les deux (`all`)
+        - `territoire` / `territoire_id` : filtre géographique
+
+        **Combinaisons valides pour `period_type` :**
+        - `all_time` (défaut) : tous les records sans restriction de période
+        - `month` : records pour un mois calendaire donné (`month` requis)
+        - `season` : records pour une saison donnée (`season` requis)
+
+        Les buckets sans record retournent `nb_records_battus: 0`.
+      operationId: getTemperatureRecordsGraph
+      tags:
+        - Temperature
+      parameters:
+        - name: date_start
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: Date de début incluse (YYYY-MM-DD).
+          example: "1940-01-01"
+        - name: date_end
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: Date de fin incluse (YYYY-MM-DD).
+          example: "2024-12-31"
+        - name: granularity
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [day, month, year]
+          description: |
+            Granularité de l'axe temporel.
+            - `day` : un point par jour
+            - `month` : un point par mois
+            - `year` : un point par année
+          example: year
+        - name: period_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all_time, month, season]
+            default: all_time
+          description: |
+            Restriction intra-période :
+            - `all_time` : tous les records (défaut)
+            - `month` : records pour un mois calendaire donné (`month` requis)
+            - `season` : records pour une saison donnée (`season` requis)
+        - name: month
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 12
+          description: Numéro du mois (1-12). Requis si `period_type=month`.
+          example: 7
+        - name: season
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [spring, summer, autumn, winter]
+          description: |
+            Saison. Requis si `period_type=season`.
+            - `spring` : printemps (mars–mai)
+            - `summer` : été (juin–août)
+            - `autumn` : automne (septembre–novembre)
+            - `winter` : hiver (décembre–février)
+        - name: type_records
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [hot, cold, all]
+            default: all
+          description: |
+            Type de records :
+            - `all` : records chauds et froids (défaut)
+            - `hot` : records chauds de TX uniquement
+            - `cold` : records froids de TN uniquement
+        - name: territoire
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [france, region, department, station]
+            default: france
+          description: |
+            Périmètre géographique :
+            - `france` : toute la France (défaut)
+            - `region` : une région (code INSEE requis dans `territoire_id`)
+            - `department` : un département (code INSEE requis dans `territoire_id`)
+            - `station` : une station (identifiant requis dans `territoire_id`)
+        - name: territoire_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Identifiant du territoire. Requis si `territoire` ≠ `france`.
+          example: "75"
+      responses:
+        "200":
+          description: Buckets temporels (histogramme) et liste des records individuels (scatter).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordsGraphResponse"
+              examples:
+                par_annee:
+                  summary: Granularité année
+                  value:
+                    buckets:
+                      - bucket: "2019"
+                        nb_records_battus: 142
+                      - bucket: "2020"
+                        nb_records_battus: 37
+                    records:
+                      - date: "2019-07-25"
+                        station_id: "07149"
+                        station_name: "ORLY"
+                        type_records: "hot"
+                        valeur: 42.6
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
   /temperature/records/cumulative:
     get:
       summary: Cumul des records
@@ -865,6 +1008,75 @@ paths:
 
 components:
   schemas:
+    RecordsGraphBucket:
+      type: object
+      required:
+        - bucket
+        - nb_records_battus
+      properties:
+        bucket:
+          type: string
+          description: |
+            Label du bucket temporel selon la granularité :
+            - `day` : `YYYY-MM-DD`
+            - `month` : `YYYY-MM`
+            - `year` : `YYYY`
+          example: "2019-07"
+        nb_records_battus:
+          type: integer
+          minimum: 0
+          description: Nombre de records de température battus dans ce bucket.
+          example: 89
+
+    RecordsGraphRecord:
+      type: object
+      required:
+        - date
+        - station_id
+        - station_name
+        - type_records
+        - valeur
+      properties:
+        date:
+          type: string
+          format: date
+          description: Date du record (YYYY-MM-DD).
+          example: "2019-07-25"
+        station_id:
+          type: string
+          description: Identifiant de la station.
+          example: "07149"
+        station_name:
+          type: string
+          description: Nom de la station.
+          example: "ORLY"
+        type_records:
+          type: string
+          enum: [hot, cold]
+          description: Type de record — chaud (TX) ou froid (TN).
+          example: "hot"
+        valeur:
+          type: number
+          description: Valeur du record en °C.
+          example: 42.6
+
+    RecordsGraphResponse:
+      type: object
+      required:
+        - buckets
+        - records
+      properties:
+        buckets:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecordsGraphBucket"
+          description: Série temporelle agrégée par bucket (histogramme).
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecordsGraphRecord"
+          description: Liste des records individuels (scatter plot).
+
     Coordinates:
       type: object
       required:
