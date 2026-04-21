@@ -2,8 +2,10 @@ import type { ShallowRef } from "vue";
 import type {
     NationalIndicatorDataPoint,
     NationalIndicatorResponse,
+    PeriodType,
+    Season,
     TemperatureDeviationGraphResponse,
-    TemperatureRecordsResponse,
+    TemperatureRecordsGraphResponse,
 } from "~/types/api";
 
 export type GranularityType = "year" | "month" | "day";
@@ -16,7 +18,7 @@ export interface SelectBarAdapter<
     T =
         | NationalIndicatorResponse
         | TemperatureDeviationGraphResponse
-        | TemperatureRecordsResponse,
+        | TemperatureRecordsGraphResponse,
     C = NationalIndicatorDataPoint | Record<string, unknown>,
 > {
     // Date
@@ -25,10 +27,16 @@ export interface SelectBarAdapter<
     pickedDateEnd: Ref<Date>;
     maxDate?: Ref<Date>;
 
-    // Slice type
+    // Deviation-style slice type (specific day/month)
     sliceTypeSwitchEnabled?: Ref<boolean>;
     sliceType?: Ref<SliceType>;
     sliceDatepickerDate?: Ref<Date>;
+    sliceTypeSwitchLabel?: string;
+
+    // Records-style period slice (season / month of year)
+    periodType?: Ref<PeriodType>;
+    month?: Ref<number | undefined>;
+    season?: Ref<Season | undefined>;
 
     chartRef?: ShallowRef;
     data: Ref<T | undefined>;
@@ -42,6 +50,9 @@ export interface SelectBarAdapter<
 
     // Territory filters (optional, specific to records)
     selectedElements?: Ref<{ value: string; id: string; type: string }[]>;
+
+    // Records kind toggle (absolute = current record per station, historical = all beaten)
+    recordKind?: Ref<"absolute" | "historical">;
 
     // Methods
     setGranularity: (value: GranularityType) => void;
@@ -57,6 +68,7 @@ export interface SelectBarAdapter<
 
     features: {
         hasSliceType: boolean;
+        hasRecordsPeriodSlice: boolean;
         hasChartTypeSelector: boolean;
         hasExport: boolean;
     };
