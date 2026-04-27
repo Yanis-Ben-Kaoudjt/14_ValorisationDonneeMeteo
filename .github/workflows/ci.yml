@@ -8,9 +8,6 @@ on:
 permissions:
   contents: read
 
-env:
-  REGISTRY: ghcr.io
-
 jobs:
   test:
     name: Tests
@@ -209,7 +206,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -219,8 +216,8 @@ jobs:
           context: ./${{ matrix.app }}
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.app }}:sha-${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.app }}:latest
+            ghcr.io/${{ env.IMAGE_NAME }}-${{ matrix.app }}:sha-${{ github.sha }}
+            ghcr.io/${{ env.IMAGE_NAME }}-${{ matrix.app }}:latest
 
   scorecard:
     name: Scorecard
@@ -237,13 +234,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create security reports directory
-        run: mkdir -p security/reports
-
       - name: Run OpenSSF Scorecard
         uses: ossf/scorecard-action@v2.4.3
         with:
-          results_file: security/reports/scorecard-results.json
+          results_file: scorecard-results.json
           results_format: json
           publish_results: true
 
@@ -251,4 +245,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: scorecard-report
-          path: security/reports/scorecard-results.json
+          path: scorecard-results.json
