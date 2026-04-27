@@ -39,6 +39,8 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+    expose:
+      - "8000"
     networks:
       - app_net
       - bd_net
@@ -48,6 +50,17 @@ services:
       context: ./frontend
     env_file:
       - ./.env
+    networks:
+      - app_net
+
+  prometheus:
+    image: prom/prometheus:v3.7.2
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - backend
     networks:
       - app_net
 
