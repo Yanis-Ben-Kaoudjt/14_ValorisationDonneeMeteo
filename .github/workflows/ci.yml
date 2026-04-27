@@ -141,6 +141,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Create security reports directory
+        run: mkdir -p security/reports
+
       - name: Run Trivy repository scan (SARIF)
         uses: aquasecurity/trivy-action@0.35.0
         with:
@@ -233,6 +236,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Create security reports directory
+        run: mkdir -p security/reports
 
       - name: Run OpenSSF Scorecard
         uses: ossf/scorecard-action@v2.4.3
