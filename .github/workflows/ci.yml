@@ -234,13 +234,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create security reports directory
-        run: mkdir -p security/reports
-
       - name: Run OpenSSF Scorecard
         uses: ossf/scorecard-action@v2.4.3
         with:
-          results_file: security/reports/scorecard-results.json
+          results_file: scorecard-results.json
           results_format: json
           publish_results: true
 
@@ -248,4 +245,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: scorecard-report
-          path: security/reports/scorecard-results.json
+          path: scorecard-results.json
