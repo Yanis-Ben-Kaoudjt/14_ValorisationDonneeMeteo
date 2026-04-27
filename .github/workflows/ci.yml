@@ -8,9 +8,6 @@ on:
 permissions:
   contents: read
 
-env:
-  REGISTRY: ghcr.io
-
 jobs:
   test:
     name: Tests
@@ -209,7 +206,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -219,8 +216,8 @@ jobs:
           context: ./${{ matrix.app }}
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.app }}:sha-${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.app }}:latest
+            ghcr.io/${{ env.IMAGE_NAME }}-${{ matrix.app }}:sha-${{ github.sha }}
+            ghcr.io/${{ env.IMAGE_NAME }}-${{ matrix.app }}:latest
 
   scorecard:
     name: Scorecard
