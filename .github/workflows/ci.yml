@@ -1,0 +1,248 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          cp .env.example .env
+          uv sync --extra dev
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: |
+          cp .env.example .env
+          npm ci --legacy-peer-deps
+
+      - name: Start test database
+        working-directory: backend/timescaledb-env
+        run: docker compose up -d --wait
+
+      - name: Run backend tests
+        working-directory: backend
+        run: |
+          mkdir -p reports
+          uv run pytest --junitxml=reports/backend-tests.xml
+
+      - name: Start backend server for frontend integration tests
+        working-directory: backend
+        run: |
+          nohup uv run python manage.py runserver 0.0.0.0:8000 > ../backend-server.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/api/v1/temperature/national-indicator?date_start=2025-01-01\&date_end=2025-12-31\&granularity=month\&slice_type=full > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend server did not start in time" >&2
+          exit 1
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: |
+          mkdir -p reports
+          npm run test:ci -- --reporter=default --reporter=junit --outputFile=reports/frontend-tests.xml
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            backend/reports/backend-tests.xml
+            frontend/reports/frontend-tests.xml
+            backend-server.log
+
+      - name: Stop test database
+        if: always()
+        working-directory: backend/timescaledb-env
+        run: docker compose down -v
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --extra dev
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+
+      - name: Run backend linter
+        working-directory: backend
+        run: uv run ruff check .
+
+      - name: Run frontend linter
+        working-directory: frontend
+        run: npm run lint
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy repository scan (SARIF)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: security/reports/trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 0
+
+      - name: Run Trivy repository scan (JSON)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: security/reports/trivy-results.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 0
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: security/reports/trivy-results.sarif
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            security/reports/trivy-results.sarif
+            security/reports/trivy-results.json
+
+  docker:
+    name: Docker
+    runs-on: ubuntu-24.04
+    needs:
+      - test
+      - lint
+      - security
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        app:
+          - backend
+          - frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Lowercase repository name
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Log in to GitHub Container Registry
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and optionally push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.app }}
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.app }}:sha-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.app }}:latest
+
+  scorecard:
+    name: Scorecard
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      contents: read
+      issues: read
+      pull-requests: read
+      checks: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run OpenSSF Scorecard
+        uses: ossf/scorecard-action@v2.4.3
+        with:
+          results_file: security/reports/scorecard-results.json
+          results_format: json
+          publish_results: true
+
+      - name: Upload Scorecard report
+        uses: actions/upload-artifact@v4
+        with:
+          name: scorecard-report
+          path: security/reports/scorecard-results.json

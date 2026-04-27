@@ -17,6 +17,10 @@ Thumbs.db
 
 # Logs
 *.log
+backend/reports/
+frontend/reports/
+security/reports/
+backend/test-report.xml
 
 # Nuxt Fonts
 .data

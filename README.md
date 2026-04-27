@@ -2,6 +2,20 @@
 
 Projet Data For Good - Saison 14
 
+[![CI](https://github.com/Yanis-Ben-Kaoudjt/14_ValorisationDonneeMeteo/actions/workflows/ci.yml/badge.svg)](https://github.com/Yanis-Ben-Kaoudjt/14_ValorisationDonneeMeteo/actions/workflows/ci.yml)
+
+## CI/CD
+
+Le projet dispose d'un pipeline GitHub Actions simple qui :
+
+- installe les dépendances backend et frontend ;
+- lance les tests ;
+- exécute le lint ;
+- génère un rapport de sécurité avec Trivy ;
+- génère un rapport Scorecard en JSON sur la branche `main` ;
+- build les images Docker ;
+- pousse les images sur `ghcr.io` uniquement depuis la branche `main`.
+
 ## Structure du projet
 
 ```
