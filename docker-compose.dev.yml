@@ -39,6 +39,8 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+    expose:
+      - "8000"
     networks:
       - app_net
       - bd_net
@@ -48,6 +50,33 @@ services:
       context: ./frontend
     env_file:
       - ./.env
+    networks:
+      - app_net
+
+  prometheus:
+    image: prom/prometheus:v3.7.2
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - backend
+    networks:
+      - app_net
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
     networks:
       - app_net
 
